@@ -1088,7 +1088,7 @@ struct lws_http_mount {
 	unsigned int cache_revalidate:1; /**< set if client cache should revalidate on use */
 	unsigned int cache_intermediaries:1; /**< set if intermediaries are allowed to cache */
 
-	unsigned int cors; /**< set if send cors header with wildcard */
+	unsigned int cors:1; /**< set if send cors header with wildcard */
 
 	unsigned char origin_protocol; /**< one of enum lws_mount_protocols */
 	unsigned char mountpoint_len; /**< length of mountpoint string */
