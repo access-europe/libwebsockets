@@ -149,6 +149,44 @@ lws_h2_state(struct lws *wsi, enum lws_h2_states s)
 	wsi->h2.h2_state = (uint8_t)s;
 }
 
+int
+lws_h2_update_rxflow(struct lws *wsi, int sid, int bump)
+{
+	struct lws_h2_protocol_send *pps;
+
+	assert(wsi);
+
+	pps = lws_h2_new_pps(LWS_H2_PPS_UPDATE_WINDOW);
+	if (!pps)
+		return 1;
+
+	if (sid == -1)
+		sid = wsi->mux.my_sid;
+
+	pps->u.update_window.sid = sid;
+	pps->u.update_window.credit = bump;
+	wsi->h2.peer_tx_cr_est += bump;
+
+	lws_pps_schedule(wsi, pps);
+
+	return 0;
+}
+
+int
+lws_h2_get_peer_txcredit_estimate(struct lws *wsi)
+{
+	return (int)wsi->h2.peer_tx_cr_est;
+}
+
+static int
+lws_h2_update_rxflow_thresh(struct lws *wsi, int sid, int threshold, int bump)
+{
+	if (wsi->h2.peer_tx_cr_est > threshold)
+		return 0;
+
+	return lws_h2_update_rxflow(wsi, sid, bump);
+}
+
 struct lws *
 lws_wsi_server_new(struct lws_vhost *vh, struct lws *parent_wsi,
 			    unsigned int sid)
@@ -173,7 +211,7 @@ lws_wsi_server_new(struct lws_vhost *vh, struct lws *parent_wsi,
 	}
 
 	/* no more children allowed by parent */
-	if (parent_wsi->h2.child_count + 1 >
+	if (parent_wsi->mux.child_count + 1 >
 	    parent_wsi->h2.h2n->set.s[H2SET_MAX_CONCURRENT_STREAMS]) {
 		lwsl_notice("reached concurrent stream limit\n");
 		return NULL;
@@ -185,19 +223,12 @@ lws_wsi_server_new(struct lws_vhost *vh, struct lws *parent_wsi,
 	}
 
 	h2n->highest_sid_opened = sid;
-	wsi->h2.my_sid = sid;
-	wsi->http2_substream = 1;
+
+	lws_wsi_mux_insert(wsi, parent_wsi, sid);
+
+	wsi->mux_substream = 1;
 	wsi->seen_nonpseudoheader = 0;
 
-	wsi->h2.parent_wsi = parent_wsi;
-	wsi->role_ops = parent_wsi->role_ops;
-	/* new guy's sibling is whoever was the first child before */
-	wsi->h2.sibling_list = parent_wsi->h2.child_list;
-	/* first child is now the new guy */
-	parent_wsi->h2.child_list = wsi;
-	parent_wsi->h2.child_count++;
-
-	wsi->h2.my_priority = 16;
 	wsi->h2.tx_cr = nwsi->h2.h2n->set.s[H2SET_INITIAL_WINDOW_SIZE];
 	wsi->h2.peer_tx_cr_est =
 			nwsi->vhost->h2.set.s[H2SET_INITIAL_WINDOW_SIZE];
@@ -225,8 +256,8 @@ lws_wsi_server_new(struct lws_vhost *vh, struct lws *parent_wsi,
 
 bail1:
 	/* undo the insert */
-	parent_wsi->h2.child_list = wsi->h2.sibling_list;
-	parent_wsi->h2.child_count--;
+	parent_wsi->mux.child_list = wsi->mux.sibling_list;
+	parent_wsi->mux.child_count--;
 
 	vh->context->count_wsi_allocated--;
 
@@ -245,7 +276,7 @@ lws_wsi_h2_adopt(struct lws *parent_wsi, struct lws *wsi)
 	struct lws *nwsi = lws_get_network_wsi(parent_wsi);
 
 	/* no more children allowed by parent */
-	if (parent_wsi->h2.child_count + 1 >
+	if (parent_wsi->mux.child_count + 1 >
 	    parent_wsi->h2.h2n->set.s[H2SET_MAX_CONCURRENT_STREAMS]) {
 		lwsl_notice("reached concurrent stream limit\n");
 		return NULL;
@@ -255,18 +286,12 @@ lws_wsi_h2_adopt(struct lws *parent_wsi, struct lws *wsi)
 
 	wsi->seen_nonpseudoheader = 0;
 #if defined(LWS_WITH_CLIENT)
-	wsi->client_h2_substream = 1;
+	wsi->client_mux_substream = 1;
 #endif
 	wsi->h2.initialized = 1;
 
-	wsi->h2.parent_wsi = parent_wsi;
-	/* new guy's sibling is whoever was the first child before */
-	wsi->h2.sibling_list = parent_wsi->h2.child_list;
-	/* first child is now the new guy */
-	parent_wsi->h2.child_list = wsi;
-	parent_wsi->h2.child_count++;
+	lws_wsi_mux_insert(wsi, parent_wsi, wsi->mux.my_sid);
 
-	wsi->h2.my_priority = 16;
 	wsi->h2.tx_cr = nwsi->h2.h2n->set.s[H2SET_INITIAL_WINDOW_SIZE];
 	wsi->h2.peer_tx_cr_est =
 			nwsi->vhost->h2.set.s[H2SET_INITIAL_WINDOW_SIZE];
@@ -287,8 +312,8 @@ lws_wsi_h2_adopt(struct lws *parent_wsi, struct lws *wsi)
 
 bail1:
 	/* undo the insert */
-	parent_wsi->h2.child_list = wsi->h2.sibling_list;
-	parent_wsi->h2.child_count--;
+	parent_wsi->mux.child_list = wsi->mux.sibling_list;
+	parent_wsi->mux.child_count--;
 
 	if (wsi->user_space)
 		lws_free_set_NULL(wsi->user_space);
@@ -324,32 +349,6 @@ int lws_h2_issue_preface(struct lws *wsi)
 	lwsl_info("%s: h2 client sending settings\n", __func__);
 
 	return 0;
-}
-
-struct lws *
-lws_h2_wsi_from_id(struct lws *parent_wsi, unsigned int sid)
-{
-	lws_start_foreach_ll(struct lws *, wsi, parent_wsi->h2.child_list) {
-		if (wsi->h2.my_sid == sid)
-			return wsi;
-	} lws_end_foreach_ll(wsi, h2.sibling_list);
-
-	return NULL;
-}
-
-int lws_remove_server_child_wsi(struct lws_context *context, struct lws *wsi)
-{
-	lws_start_foreach_llp(struct lws **, w, wsi->h2.child_list) {
-		if (*w == wsi) {
-			*w = wsi->h2.sibling_list;
-			(wsi->h2.parent_wsi)->h2.child_count--;
-			return 0;
-		}
-	} lws_end_foreach_llp(w, h2.sibling_list);
-
-	lwsl_err("%s: can't find %p\n", __func__, wsi);
-
-	return 1;
 }
 
 void
@@ -408,9 +407,9 @@ lws_h2_rst_stream(struct lws *wsi, uint32_t err, const char *reason)
 		return 1;
 
 	lwsl_info("%s: RST_STREAM 0x%x, sid %d, REASON '%s'\n", __func__, (int)err,
-			wsi->h2.my_sid, reason);
+			wsi->mux.my_sid, reason);
 
-	pps->u.rs.sid = wsi->h2.my_sid;
+	pps->u.rs.sid = wsi->mux.my_sid;
 	pps->u.rs.err = err;
 
 	lws_pps_schedule(wsi, pps);
@@ -486,17 +485,17 @@ lws_h2_settings(struct lws *wsi, struct http2_settings *settings,
 			 */
 
 			lws_start_foreach_ll(struct lws *, w,
-					     nwsi->h2.child_list) {
+					     nwsi->mux.child_list) {
 				lwsl_info("%s: adi child tc cr %d +%d -> %d",
-					    __func__,
-					    w->h2.tx_cr, b - (unsigned int)settings->s[a],
-					    w->h2.tx_cr + b - (unsigned int)settings->s[a]);
+					  __func__, w->h2.tx_cr,
+					  b - (unsigned int)settings->s[a],
+					  w->h2.tx_cr + b -
+						  (unsigned int)settings->s[a]);
 				w->h2.tx_cr += b - settings->s[a];
 				if (w->h2.tx_cr > 0 &&
-				    w->h2.tx_cr <=
-						  (int32_t)(b - settings->s[a]))
+				    w->h2.tx_cr <= (int32_t)(b - settings->s[a]))
 					lws_callback_on_writable(w);
-			} lws_end_foreach_ll(w, h2.sibling_list);
+			} lws_end_foreach_ll(w, mux.sibling_list);
 
 			break;
 		case H2SET_MAX_FRAME_SIZE:
@@ -553,7 +552,7 @@ lws_h2_tx_cr_get(struct lws *wsi)
 	int c = wsi->h2.tx_cr;
 	struct lws *nwsi = lws_get_network_wsi(wsi);
 
-	if (!wsi->http2_substream && !nwsi->upgraded_to_http2)
+	if (!wsi->mux_substream && !nwsi->upgraded_to_http2)
 		return ~0x80000000;
 
 	lwsl_info ("%s: %p: own tx credit %d: nwsi credit %d\n",
@@ -671,7 +670,7 @@ int lws_h2_do_pps_send(struct lws *wsi)
 		for (n = 1; n < H2SET_COUNT; n++)
 			if (h2n->set.s[n] != lws_h2_defaults.s[n]) {
 				lwsl_debug("sending SETTING %d 0x%x\n", n,
-						(unsigned int)wsi->h2.h2n->set.s[n]);
+					   (unsigned int)wsi->h2.h2n->set.s[n]);
 				lws_h2_set_bin(wsi, n, &set[LWS_PRE + m]);
 				m += sizeof(h2n->one_setting);
 			}
@@ -679,6 +678,27 @@ int lws_h2_do_pps_send(struct lws *wsi)
 				       flags, LWS_H2_STREAM_ID_MASTER, m,
 		     		       &set[LWS_PRE]);
 		if (n != m) {
+			lwsl_info("send %d %d\n", n, m);
+			goto bail;
+		}
+		break;
+
+	case LWS_H2_PPS_SETTINGS_INITIAL_UPDATE_WINDOW:
+		q = &set[LWS_PRE];
+		*q++ = H2SET_INITIAL_WINDOW_SIZE >> 8;
+		*q++ = H2SET_INITIAL_WINDOW_SIZE;
+		*q++ = pps->u.update_window.credit >> 24;
+		*q++ = pps->u.update_window.credit >> 16;
+		*q++ = pps->u.update_window.credit >> 8;
+		*q = pps->u.update_window.credit;
+
+		lwsl_debug("%s: resetting initial window to %d\n", __func__,
+				(int)pps->u.update_window.credit);
+
+		n = lws_h2_frame_write(wsi, LWS_H2_FRAME_TYPE_SETTINGS,
+				       flags, LWS_H2_STREAM_ID_MASTER, 6,
+		     		       &set[LWS_PRE]);
+		if (n != 6) {
 			lwsl_info("send %d %d\n", n, m);
 			goto bail;
 		}
@@ -693,6 +713,7 @@ int lws_h2_do_pps_send(struct lws *wsi)
 			lwsl_err("ack tells %d\n", n);
 			goto bail;
 		}
+		wsi->h2_acked_settings = 0;
 		/* this is the end of the preface dance then? */
 		if (lwsi_state(wsi) == LRS_H2_AWAIT_SETTINGS) {
 			lwsi_set_state(wsi, LRS_ESTABLISHED);
@@ -794,7 +815,7 @@ int lws_h2_do_pps_send(struct lws *wsi)
 			lwsl_info("send %d %d\n", n, m);
 			goto bail;
 		}
-		cwsi = lws_h2_wsi_from_id(wsi, pps->u.rs.sid);
+		cwsi = lws_wsi_mux_from_id(wsi, pps->u.rs.sid);
 		if (cwsi) {
 			lwsl_debug("%s: closing cwsi %p %s %s (wsi %p)\n",
 				   __func__, cwsi, cwsi->role_ops->name,
@@ -807,7 +828,7 @@ int lws_h2_do_pps_send(struct lws *wsi)
 		lwsl_debug("Issuing LWS_H2_PPS_UPDATE_WINDOW: sid %d: add %d\n",
 			    (int)pps->u.update_window.sid,
 			    (int)pps->u.update_window.credit);
-		*p++ = pps->u.update_window.credit >> 24;
+		*p++ = (pps->u.update_window.credit >> 24) & 0x7f; /* 31b */
 		*p++ = pps->u.update_window.credit >> 16;
 		*p++ = pps->u.update_window.credit >> 8;
 		*p++ = pps->u.update_window.credit;
@@ -870,7 +891,7 @@ lws_h2_parse_frame_header(struct lws *wsi)
 					wsi->vhost->keepalive_timeout : 31);
 
 	if (h2n->sid)
-		h2n->swsi = lws_h2_wsi_from_id(wsi, h2n->sid);
+		h2n->swsi = lws_wsi_mux_from_id(wsi, h2n->sid);
 
 	lwsl_debug("%p (%p): fr hdr: typ 0x%x, fla 0x%x, sid 0x%x, len 0x%x\n",
 		  wsi, h2n->swsi, h2n->type, h2n->flags, (unsigned int)h2n->sid,
@@ -887,7 +908,8 @@ lws_h2_parse_frame_header(struct lws *wsi)
 		 * peer sent us something bigger than we told
 		 * it we would allow
 		 */
-		lwsl_info("received oversize frame %d\n", (unsigned int)h2n->length);
+		lwsl_info("%s: received oversize frame %d\n", __func__,
+			  (unsigned int)h2n->length);
 		lws_h2_goaway(wsi, H2_ERR_FRAME_SIZE_ERROR,
 			      "Peer ignored our frame size setting");
 		return 1;
@@ -1127,7 +1149,7 @@ lws_h2_parse_frame_header(struct lws *wsi)
 #if defined(LWS_WITH_CLIENT)
 		if (wsi->client_h2_alpn) {
 			if (h2n->sid) {
-				h2n->swsi = lws_h2_wsi_from_id(wsi, h2n->sid);
+				h2n->swsi = lws_wsi_mux_from_id(wsi, h2n->sid);
 				lwsl_info("HEADERS: nwsi %p: sid %u mapped "
 					  "to wsi %p\n", wsi,
 					  (unsigned int)h2n->sid, h2n->swsi);
@@ -1140,7 +1162,7 @@ lws_h2_parse_frame_header(struct lws *wsi)
 
 		if (!h2n->swsi) {
 			/* no more children allowed by parent */
-			if (wsi->h2.child_count + 1 >
+			if (wsi->mux.child_count + 1 >
 			    wsi->h2.h2n->set.s[H2SET_MAX_CONCURRENT_STREAMS]) {
 				lws_h2_goaway(wsi, H2_ERR_PROTOCOL_ERROR,
 				"Another stream not allowed");
@@ -1157,22 +1179,11 @@ lws_h2_parse_frame_header(struct lws *wsi)
 				return 1;
 			}
 
-			pps = lws_h2_new_pps(LWS_H2_PPS_UPDATE_WINDOW);
-			if (!pps)
+			if (lws_h2_update_rxflow(wsi, h2n->sid, 4 * 65536))
 				goto cleanup_wsi;
-			pps->u.update_window.sid = h2n->sid;
-			pps->u.update_window.credit = 4 * 65536;
-			h2n->swsi->h2.peer_tx_cr_est +=
-						pps->u.update_window.credit;
-			lws_pps_schedule(wsi, pps);
 
-			pps = lws_h2_new_pps(LWS_H2_PPS_UPDATE_WINDOW);
-			if (!pps)
+			if (lws_h2_update_rxflow(wsi, 0, 4 * 65536))
 				goto cleanup_wsi;
-			pps->u.update_window.sid = 0;
-			pps->u.update_window.credit = 4 * 65536;
-			wsi->h2.peer_tx_cr_est += pps->u.update_window.credit;
-			lws_pps_schedule(wsi, pps);
 		}
 
 		/*
@@ -1195,12 +1206,12 @@ lws_h2_parse_frame_header(struct lws *wsi)
 		 * transitions to the "closed" state when the first frame for
 		 * stream 7 is sent or received.
 		 */
-		lws_start_foreach_ll(struct lws *, w, wsi->h2.child_list) {
-			if (w->h2.my_sid < h2n->sid &&
+		lws_start_foreach_ll(struct lws *, w, wsi->mux.child_list) {
+			if (w->mux.my_sid < h2n->sid &&
 			    w->h2.h2_state == LWS_H2_STATE_IDLE)
 				lws_close_free_wsi(w, 0, "h2 sid close");
-			assert(w->h2.sibling_list != w);
-		} lws_end_foreach_ll(w, h2.sibling_list);
+			assert(w->mux.sibling_list != w);
+		} lws_end_foreach_ll(w, mux.sibling_list);
 
 		if (lws_check_opt(h2n->swsi->vhost->options,
 			       LWS_SERVER_OPTION_VH_H2_HALF_CLOSED_LONG_POLL)) {
@@ -1210,7 +1221,7 @@ lws_h2_parse_frame_header(struct lws *wsi)
 			 * half-closed remote state, allowing immortal long
 			 * poll
 			 */
-			lws_http_mark_immortal(h2n->swsi);
+			lws_mux_mark_immortal(h2n->swsi);
 			lwsl_info("%s: %p: h2 stream entering long poll\n",
 					__func__, h2n->swsi);
 
@@ -1299,7 +1310,7 @@ lws_h2_parse_end_of_frame(struct lws *wsi)
 	h2n->count = 0;
 
 	if (h2n->sid)
-		h2n->swsi = lws_h2_wsi_from_id(wsi, h2n->sid);
+		h2n->swsi = lws_wsi_mux_from_id(wsi, h2n->sid);
 
 	if (h2n->sid > h2n->highest_sid)
 		h2n->highest_sid = h2n->sid;
@@ -1322,7 +1333,7 @@ lws_h2_parse_end_of_frame(struct lws *wsi)
 	case LWS_H2_FRAME_TYPE_SETTINGS:
 
 #if defined(LWS_WITH_CLIENT)
-		if (wsi->client_h2_alpn && !wsi->client_h2_migrated &&
+		if (wsi->client_h2_alpn && !wsi->client_mux_migrated &&
 		    !(h2n->flags & LWS_H2_FLAG_SETTINGS_ACK)) {
 			struct lws_h2_protocol_send *pps;
 
@@ -1331,7 +1342,7 @@ lws_h2_parse_end_of_frame(struct lws *wsi)
 			wsi->http.fop_fd = NULL;
 #endif
 			lwsl_info("%s: migrating\n", __func__);
-			wsi->client_h2_migrated = 1;
+			wsi->client_mux_migrated = 1;
 			/*
 			 * we need to treat the headers from the upgrade as the
 			 * first job.  So these need to get shifted to sid 1.
@@ -1341,7 +1352,7 @@ lws_h2_parse_end_of_frame(struct lws *wsi)
 				return 1;
 			h2n->sid = 1;
 
-			assert(lws_h2_wsi_from_id(wsi, 1) == h2n->swsi);
+			assert(lws_wsi_mux_from_id(wsi, 1) == h2n->swsi);
 
 			lws_role_transition(wsi, LWSIFR_CLIENT,
 					    LRS_H2_WAITING_TO_SEND_HEADERS,
@@ -1353,19 +1364,22 @@ lws_h2_parse_end_of_frame(struct lws *wsi)
 
 			/* pass on the initial headers to SID 1 */
 			h2n->swsi->http.ah = wsi->http.ah;
-			h2n->swsi->client_h2_substream = 1;
+			h2n->swsi->client_mux_substream = 1;
 #if defined(LWS_WITH_CLIENT)
 			h2n->swsi->flags = wsi->flags;
 #endif
 
 			h2n->swsi->protocol = wsi->protocol;
-			if (h2n->swsi->user_space && !h2n->swsi->user_space_externally_allocated)
+			if (h2n->swsi->user_space &&
+			    !h2n->swsi->user_space_externally_allocated)
 				lws_free(h2n->swsi->user_space);
 			h2n->swsi->user_space = wsi->user_space;
 			h2n->swsi->user_space_externally_allocated =
 					wsi->user_space_externally_allocated;
 			h2n->swsi->opaque_user_data = wsi->opaque_user_data;
 			wsi->opaque_user_data = NULL;
+			h2n->swsi->h2.manual_initial_tx_credit =
+					wsi->h2.manual_initial_tx_credit;
 
 			wsi->user_space = NULL;
 
@@ -1383,39 +1397,20 @@ lws_h2_parse_end_of_frame(struct lws *wsi)
 
 			lws_callback_on_writable(h2n->swsi);
 
-			if (!wsi->h2_acked_settings
-#if defined(LWS_WITH_CLIENT)
-				|| !(wsi->flags & LCCSCF_H2_QUIRK_NGHTTP2_END_STREAM)
-#endif
+			if (!wsi->h2_acked_settings ||
+			    !(wsi->flags & LCCSCF_H2_QUIRK_NGHTTP2_END_STREAM)
 			) {
 				pps = lws_h2_new_pps(LWS_H2_PPS_ACK_SETTINGS);
 				if (!pps)
 					return 1;
 				lws_pps_schedule(wsi, pps);
-				lwsl_info("%s: scheduled settings ack PPS\n", __func__);
+				lwsl_info("%s: SETTINGS ack PPS\n", __func__);
 				wsi->h2_acked_settings = 1;
 			}
 
 			/* also attach any queued guys */
 
-			/* we have a transaction queue that wants to pipeline */
-			lws_vhost_lock(wsi->vhost);
-			lws_start_foreach_dll_safe(struct lws_dll2 *, d, d1,
-				  wsi->dll2_cli_txn_queue_owner.head) {
-				struct lws *w = lws_container_of(d, struct lws,
-						dll2_cli_txn_queue);
-
-				if (lwsi_state(w) == LRS_H1C_ISSUE_HANDSHAKE2) {
-					lwsl_info("%s: cli pipeq %p to be h2\n",
-							__func__, w);
-					/* remove ourselves from client queue */
-					lws_dll2_remove(&w->dll2_cli_txn_queue);
-
-					/* attach ourselves as an h2 stream */
-					lws_wsi_h2_adopt(wsi, w);
-				}
-			} lws_end_foreach_dll_safe(d, d1);
-			lws_vhost_unlock(wsi->vhost);
+			lws_wsi_mux_apply_queue(wsi);
 		}
 #endif
 		break;
@@ -1468,9 +1463,9 @@ lws_h2_parse_end_of_frame(struct lws *wsi)
 		h2n->swsi->hdr_parsing_completed = 1;
 
 #if defined(LWS_WITH_CLIENT)
-		if (h2n->swsi->client_h2_substream) {
+		if (h2n->swsi->client_mux_substream) {
 			if (lws_client_interpret_server_handshake(h2n->swsi)) {
-				lwsl_info("%s: cli int serv hs closed it\n", __func__);
+				lwsl_info("%s: cli int serv hs cls\n", __func__);
 				break;
 			}
 		}
@@ -1538,7 +1533,7 @@ lws_h2_parse_end_of_frame(struct lws *wsi)
 		}
 
 #if defined(LWS_WITH_CLIENT)
-		if (h2n->swsi->client_h2_substream) {
+		if (h2n->swsi->client_mux_substream) {
 			lwsl_info("%s: headers: client path\n", __func__);
 			break;
 		}
@@ -1622,7 +1617,7 @@ lws_h2_parse_end_of_frame(struct lws *wsi)
 		 * send anything else anyway.
 		 */
 
-		if (h2n->swsi->client_h2_substream &&
+		if (h2n->swsi->client_mux_substream &&
 		    (h2n->flags & LWS_H2_FLAG_END_STREAM)) {
 			lwsl_info("%s: %p: DATA: end stream\n",
 				  __func__, h2n->swsi);
@@ -1652,9 +1647,10 @@ lws_h2_parse_end_of_frame(struct lws *wsi)
 		break;
 
 	case LWS_H2_FRAME_TYPE_PING:
-		if (h2n->flags & LWS_H2_FLAG_SETTINGS_ACK) { // ack
+		if (h2n->flags & LWS_H2_FLAG_SETTINGS_ACK)
 			lws_validity_confirmed(wsi);
-		} else {/* they're sending us a ping request */
+		else {
+			/* they're sending us a ping request */
 			struct lws_h2_protocol_send *pps =
 					lws_h2_new_pps(LWS_H2_PPS_PONG);
 			if (!pps)
@@ -1669,6 +1665,9 @@ lws_h2_parse_end_of_frame(struct lws *wsi)
 		break;
 
 	case LWS_H2_FRAME_TYPE_WINDOW_UPDATE:
+		/*
+		 * We only have an unsigned 31-bit (positive) increment possible
+		 */
 		h2n->hpack_e_dep &= ~(1u << 31);
 		lwsl_info("WINDOW_UPDATE: sid %u %u (0x%x)\n",
 			  (unsigned int)h2n->sid,
@@ -1719,12 +1718,12 @@ lws_h2_parse_end_of_frame(struct lws *wsi)
 		 * It did change sendability... for us and any children waiting
 		 * on us... reassess blockage for all children first
 		 */
-		lws_start_foreach_ll(struct lws *, w, wsi->h2.child_list) {
+		lws_start_foreach_ll(struct lws *, w, wsi->mux.child_list) {
 			lws_callback_on_writable(w);
-		} lws_end_foreach_ll(w, h2.sibling_list);
+		} lws_end_foreach_ll(w, mux.sibling_list);
 
 		if (eff_wsi->h2.skint && lws_h2_tx_cr_get(eff_wsi)) {
-			lwsl_info("%s: %p: skint\n", __func__, wsi);
+			lwsl_info("%s: %p: clearing skint\n", __func__, eff_wsi);
 			eff_wsi->h2.skint = 0;
 			lws_callback_on_writable(eff_wsi);
 		}
@@ -1850,7 +1849,8 @@ lws_h2_parser(struct lws *wsi, unsigned char *in, lws_filepos_t inlen,
 				h2n->weight_temp = c;
 				h2n->collected_priority = 1;
 				lwsl_debug("PRI FL: dep 0x%x, weight 0x%02X\n",
-					   (unsigned int)h2n->dep, h2n->weight_temp);
+					   (unsigned int)h2n->dep,
+					   h2n->weight_temp);
 				break; /* we consumed this */
 			}
 			if (h2n->padding && h2n->count >
@@ -1971,12 +1971,15 @@ lws_h2_parser(struct lws *wsi, unsigned char *in, lws_filepos_t inlen,
 				n = (int)inlen + 1;
 				if (n > (int)(h2n->length - h2n->count + 1)) {
 					n = h2n->length - h2n->count + 1;
-					lwsl_debug("---- restricting len to %d vs %ld\n", n, (long)inlen + 1);
+					lwsl_debug("---- restricting len to %d "
+						   "vs %ld\n", n, (long)inlen + 1);
 				}
 #if defined(LWS_WITH_CLIENT)
-				if (h2n->swsi->client_h2_substream) {
+				if (h2n->swsi->client_mux_substream) {
 					if (!h2n->swsi->protocol) {
-						lwsl_err("%s: swsi %pdoesn't have protocol\n", __func__, h2n->swsi);
+						lwsl_err("%s: swsi %p doesn't "
+							 "have protocol\n",
+							 __func__, h2n->swsi);
 						m = 1;
 					} else
 					m = user_callback_handle_rxflow(
@@ -2002,60 +2005,62 @@ lws_h2_parser(struct lws *wsi, unsigned char *in, lws_filepos_t inlen,
 #endif
 				{
 
-					if (lwsi_state(h2n->swsi) == LRS_DEFERRING_ACTION) {
-						// lwsl_notice("%s: appending because we are in LRS_DEFERRING_ACTION\n", __func__);
-						m = lws_buflist_append_segment(
-							&h2n->swsi->buflist,
-								in - 1, n);
-						if (m < 0)
-							return -1;
-						if (m) {
-							struct lws_context_per_thread *pt = &wsi->context->pt[(int)wsi->tsi];
-							lwsl_debug("%s: added %p to rxflow list\n", __func__, wsi);
-							lws_dll2_add_head(&h2n->swsi->dll_buflist, &pt->dll_buflist_owner);
-						}
-						in += n - 1;
-						h2n->inside += n;
-						h2n->count += n - 1;
-						inlen -= n - 1;
-
-						lwsl_debug("%s: deferred %d\n", __func__, n);
-						goto do_windows;
+				if (lwsi_state(h2n->swsi) == LRS_DEFERRING_ACTION) {
+					m = lws_buflist_append_segment(
+						&h2n->swsi->buflist, in - 1, n);
+					if (m < 0)
+						return -1;
+					if (m) {
+						struct lws_context_per_thread *pt =
+							&wsi->context->pt[(int)wsi->tsi];
+						lwsl_debug("%s: added %p to rxflow list\n",
+							   __func__, wsi);
+						lws_dll2_add_head(&h2n->swsi->dll_buflist,
+								  &pt->dll_buflist_owner);
 					}
-
-					h2n->swsi->outer_will_close = 1;
-					/*
-					 * choose the length for this go so that we end at
-					 * the frame boundary, in the case there is already
-					 * more waiting leave it for next time around
-					 */
-
-					n = lws_read_h1(h2n->swsi, in - 1, n);
-					// lwsl_notice("%s: lws_read_h1 %d\n", __func__, n);
-					h2n->swsi->outer_will_close = 0;
-					/*
-					 * can return 0 in POST body with
-					 * content len exhausted somehow.
-					 */
-					if (n < 0 ||
-					    (!n && !lws_buflist_next_segment_len(&wsi->buflist, NULL))) {
-						lwsl_info("%s: lws_read_h1 told %d %u / %u\n",
-							__func__, n,
-							(unsigned int)h2n->count,
-							(unsigned int)h2n->length);
-						in += h2n->length - h2n->count;
-						h2n->inside = h2n->length;
-						h2n->count = h2n->length - 1;
-
-						//if (n < 0)
-						//	goto already_closed_swsi;
-						goto close_swsi_and_return;
-					}
-
-					inlen -= n - 1;
 					in += n - 1;
 					h2n->inside += n;
 					h2n->count += n - 1;
+					inlen -= n - 1;
+
+					lwsl_debug("%s: deferred %d\n", __func__, n);
+					goto do_windows;
+				}
+
+				h2n->swsi->outer_will_close = 1;
+				/*
+				 * choose the length for this go so that we end
+				 * at the frame boundary, in the case there is
+				 * already more waiting leave it for next time
+				 * around
+				 */
+
+				n = lws_read_h1(h2n->swsi, in - 1, n);
+				h2n->swsi->outer_will_close = 0;
+				/*
+				 * can return 0 in POST body with
+				 * content len exhausted somehow.
+				 */
+				if (n < 0 || (!n &&
+				    !lws_buflist_next_segment_len(&wsi->buflist,
+								  NULL))) {
+					lwsl_info("%s: lws_read_h1 told %d %u / %u\n",
+						__func__, n,
+						(unsigned int)h2n->count,
+						(unsigned int)h2n->length);
+					in += h2n->length - h2n->count;
+					h2n->inside = h2n->length;
+					h2n->count = h2n->length - 1;
+
+					//if (n < 0)
+					//	goto already_closed_swsi;
+					goto close_swsi_and_return;
+				}
+
+				inlen -= n - 1;
+				in += n - 1;
+				h2n->inside += n;
+				h2n->count += n - 1;
 				}
 
 do_windows:
@@ -2064,30 +2069,36 @@ do_windows:
 				wsi->h2.peer_tx_cr_est -= n;
 				h2n->swsi->h2.peer_tx_cr_est -= n;
 
-	//			lwsl_notice("   peer_tx_cr_est %d, parent %d\n",
-	//				   h2n->swsi->h2.peer_tx_cr_est, wsi->h2.peer_tx_cr_est);
+#if defined(LWS_WITH_CLIENT)
+				if (!(h2n->swsi->flags & LCCSCF_H2_MANUAL_RXFLOW))
+#endif
+				{
+					/*
+					 * The default behaviour is we just keep
+					 * cranking the other side's tx credit
+					 * back up, for simple bulk transfer as
+					 * fast as we can take it
+					 */
 
-				if (h2n->swsi->h2.peer_tx_cr_est < (int)(2 * h2n->length) + 65536) {
-					pps = lws_h2_new_pps(LWS_H2_PPS_UPDATE_WINDOW);
-					if (!pps)
-						return 1;
-					pps->u.update_window.sid = h2n->sid;
-					pps->u.update_window.credit = (2 * h2n->length + 65536);
-					h2n->swsi->h2.peer_tx_cr_est += pps->u.update_window.credit; 
-					lws_pps_schedule(wsi, pps);
+					m = (2 * h2n->length) + 65536;
+
+					/* update both the stream and nwsi */
+
+					lws_h2_update_rxflow_thresh(h2n->swsi,
+								    h2n->sid, m, m);
+					lws_h2_update_rxflow_thresh(wsi, 0, m, m);
 				}
-				if (wsi->h2.peer_tx_cr_est < (int)(2 * h2n->length) + 65536) {
-					pps = lws_h2_new_pps(LWS_H2_PPS_UPDATE_WINDOW);
-					if (!pps)
-						return 1;
-					pps->u.update_window.sid = 0;
-					pps->u.update_window.credit = (2 * h2n->length + 65536);
-					wsi->h2.peer_tx_cr_est += pps->u.update_window.credit;
-					lws_pps_schedule(wsi, pps);
+#if defined(LWS_WITH_CLIENT)
+				else {
+					/*
+					 * If he's handling it himself, only
+					 * repair the nwsi credit but allow the
+					 * stream credit to run down until the
+					 * user code deals with it
+					 */
+					lws_h2_update_rxflow(wsi, 0, n);
 				}
-
-				// lwsl_notice("%s: count %d len %d\n", __func__, (int)h2n->count, (int)h2n->length);
-
+#endif
 				break;
 
 			case LWS_H2_FRAME_TYPE_PRIORITY:
@@ -2232,7 +2243,6 @@ lws_h2_client_handshake(struct lws *wsi)
 	char *meth = lws_hdr_simple_ptr(wsi, _WSI_TOKEN_CLIENT_METHOD),
 	     *uri = lws_hdr_simple_ptr(wsi, _WSI_TOKEN_CLIENT_URI);
 	struct lws *nwsi = lws_get_network_wsi(wsi);
-	struct lws_h2_protocol_send *pps;
 	int n, m;
 	/*
 	 * The identifier of a newly established stream MUST be numerically
@@ -2245,26 +2255,26 @@ lws_h2_client_handshake(struct lws *wsi)
 	int sid = nwsi->h2.h2n->highest_sid_opened + 2;
 
 	nwsi->h2.h2n->highest_sid_opened = sid;
-	wsi->h2.my_sid = sid;
+	wsi->mux.my_sid = sid;
 
 	lwsl_info("%s: CLIENT_WAITING_TO_SEND_HEADERS: pollout (sid %d)\n",
-			__func__, wsi->h2.my_sid);
+			__func__, wsi->mux.my_sid);
 
-	pps = lws_h2_new_pps(LWS_H2_PPS_UPDATE_WINDOW);
-	if (!pps)
-		return 1;
-	pps->u.update_window.sid = sid;
-	pps->u.update_window.credit = 4 * 65536;
-	wsi->h2.peer_tx_cr_est += pps->u.update_window.credit;
-	lws_pps_schedule(wsi, pps);
+#if defined(LWS_WITH_CLIENT)
+	/*
+	 * Normally let's charge up the peer tx credit a bit.  But if
+	 * MANUAL_REFLOW is set, just leave it at the initial credit given in
+	 * the client create info
+	 */
+	if (!(wsi->flags & LCCSCF_H2_MANUAL_RXFLOW))
+		/* next statement... */
+#endif
 
-	pps = lws_h2_new_pps(LWS_H2_PPS_UPDATE_WINDOW);
-	if (!pps)
+	if (lws_h2_update_rxflow(wsi, sid, 4 * 65536))
 		return 1;
-	pps->u.update_window.sid = 0;
-	pps->u.update_window.credit = 4 * 65536;
-	wsi->h2.peer_tx_cr_est += pps->u.update_window.credit;
-	lws_pps_schedule(wsi, pps);
+
+	if (lws_h2_update_rxflow(wsi, 0, 4 * 65536))
+		return 1;
 
 	p = start = buf = pt->serv_buf + LWS_PRE;
 	end = start + (wsi->context->pt_serv_buf_size / 2) - LWS_PRE - 1;
@@ -2322,8 +2332,8 @@ lws_h2_client_handshake(struct lws *wsi)
 
 	if (wsi->flags & LCCSCF_HTTP_X_WWW_FORM_URLENCODED) {
 		if (lws_add_http_header_by_token(wsi, WSI_TOKEN_HTTP_CONTENT_TYPE,
-					(unsigned char *)"application/x-www-form-urlencoded",
-					33, &p, end))
+			   (unsigned char *)"application/x-www-form-urlencoded",
+			   33, &p, end))
 			goto fail_length;
 		lws_client_http_body_pending(wsi, 1);
 	}
@@ -2405,9 +2415,8 @@ lws_h2_ws_handshake(struct lws *wsi)
 		    /*  - it is not an empty string */
 		    wsi->protocol->name && wsi->protocol->name[0]) {
 			if (lws_add_http_header_by_token(wsi, WSI_TOKEN_PROTOCOL,
-						 (unsigned char *)wsi->protocol->name,
-						 (int)strlen(wsi->protocol->name),
-						 &p, end))
+				(unsigned char *)wsi->protocol->name,
+				(int)strlen(wsi->protocol->name), &p, end))
 			return -1;
 		}
 	}
@@ -2526,7 +2535,7 @@ int
 lws_h2_client_stream_long_poll_rxonly(struct lws *wsi)
 {
 
-	if (!wsi->http2_substream)
+	if (!wsi->mux_substream)
 		return 1;
 
 	/*

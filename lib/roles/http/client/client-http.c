@@ -24,7 +24,7 @@
 
 #include "private-lib-core.h"
 
-LWS_VISIBLE LWS_EXTERN void
+void
 lws_client_http_body_pending(struct lws *wsi, int something_left_to_send)
 {
 	wsi->client_http_body_pending = !!something_left_to_send;
@@ -642,7 +642,7 @@ lws_http_transaction_completed_client(struct lws *wsi)
 	n = _lws_generic_transaction_completed_active_conn(wsi);
 
 	if (wsi->http.ah) {
-		if (wsi->client_h2_substream)
+		if (wsi->client_mux_substream)
 			/*
 			 * As an h2 client, once we did our transaction, that is
 			 * it for us.  Further transactions will happen as new
@@ -684,7 +684,7 @@ lws_http_transaction_completed_client(struct lws *wsi)
 	return 0;
 }
 
-LWS_VISIBLE LWS_EXTERN unsigned int
+unsigned int
 lws_http_client_http_response(struct lws *_wsi)
 {
 	struct lws *wsi;
@@ -729,7 +729,7 @@ lws_client_interpret_server_handshake(struct lws *wsi)
 		/* we are being an http client...
 		 */
 #if defined(LWS_ROLE_H2)
-		if (wsi->client_h2_alpn || wsi->client_h2_substream) {
+		if (wsi->client_h2_alpn || wsi->client_mux_substream) {
 			lwsl_debug("%s: %p: transitioning to h2 client\n",
 				   __func__, wsi);
 			lws_role_transition(wsi, LWSIFR_CLIENT,
@@ -767,7 +767,7 @@ lws_client_interpret_server_handshake(struct lws *wsi)
 	 */
 
 	wsi->http.conn_type = HTTP_CONNECTION_KEEP_ALIVE;
-	if (!wsi->client_h2_substream) {
+	if (!wsi->client_mux_substream) {
 		p = lws_hdr_simple_ptr(wsi, WSI_TOKEN_HTTP);
 		if (wsi->do_ws && !p) {
 			lwsl_info("no URI\n");
@@ -910,7 +910,7 @@ lws_client_interpret_server_handshake(struct lws *wsi)
 
 		/* if h1 KA is allowed, enable the queued pipeline guys */
 
-		if (!wsi->client_h2_alpn && !wsi->client_h2_substream &&
+		if (!wsi->client_h2_alpn && !wsi->client_mux_substream &&
 		    w == wsi) { /* ie, coming to this for the first time */
 			if (wsi->http.conn_type == HTTP_CONNECTION_KEEP_ALIVE)
 				wsi->keepalive_active = 1;
@@ -1290,7 +1290,28 @@ lws_generate_client_handshake(struct lws *wsi, char *pkt)
 
 #if defined(LWS_ROLE_H1) || defined(LWS_ROLE_H2)
 
-LWS_VISIBLE int
+int
+lws_http_basic_auth_gen(const char *user, const char *pw, char *buf, size_t len)
+{
+	size_t n = strlen(user), m = strlen(pw);
+	char b[128];
+
+	if (len < 6 + ((4 * (n + m + 1)) / 3) + 1)
+		return 1;
+
+	memcpy(buf, "Basic ", 6);
+
+	n = lws_snprintf(b, sizeof(b), "%s:%s", user, pw);
+	if (n >= sizeof(b) - 2)
+		return 2;
+
+	lws_b64_encode_string(b, n, buf + 6, len - 6);
+	buf[len - 1] = '\0';
+
+	return 0;
+}
+
+int
 lws_http_client_read(struct lws *wsi, char **buf, int *len)
 {
 	struct lws_context_per_thread *pt = &wsi->context->pt[(int)wsi->tsi];

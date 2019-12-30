@@ -137,7 +137,8 @@ done_list:
 				 vhost->name, vhost->iface, vhost->listen_port);
 			else
 				return -1;
-			return (info->options & LWS_SERVER_OPTION_FAIL_UPON_UNABLE_TO_BIND) == LWS_SERVER_OPTION_FAIL_UPON_UNABLE_TO_BIND?
+			return (info->options & LWS_SERVER_OPTION_FAIL_UPON_UNABLE_TO_BIND) ==
+					LWS_SERVER_OPTION_FAIL_UPON_UNABLE_TO_BIND?
 				-1 : 1;
 		case LWS_ITOSA_NOT_USABLE:
 			/* can't add it */
@@ -146,7 +147,8 @@ done_list:
 				 vhost->name, vhost->iface, vhost->listen_port);
 			else
 				return -1;
-			return (info->options & LWS_SERVER_OPTION_FAIL_UPON_UNABLE_TO_BIND) == LWS_SERVER_OPTION_FAIL_UPON_UNABLE_TO_BIND?
+			return (info->options & LWS_SERVER_OPTION_FAIL_UPON_UNABLE_TO_BIND) ==
+					LWS_SERVER_OPTION_FAIL_UPON_UNABLE_TO_BIND?
 				-1 : 1;
 		}
 	}
@@ -245,7 +247,8 @@ done_list:
 #endif
 		lws_plat_set_socket_options(vhost, sockfd, 0);
 
-		is = lws_socket_bind(vhost, sockfd, vhost->listen_port, vhost->iface, 1);
+		is = lws_socket_bind(vhost, sockfd, vhost->listen_port,
+				     vhost->iface, 1);
 		if (is == LWS_ITOSA_BUSY) {
 			/* treat as fatal */
 			compatible_close(sockfd);
@@ -309,7 +312,8 @@ done_list:
 		}
 	} /* for each thread able to independently listen */
 
-	if (!lws_check_opt(vhost->context->options, LWS_SERVER_OPTION_EXPLICIT_VHOSTS)) {
+	if (!lws_check_opt(vhost->context->options,
+			   LWS_SERVER_OPTION_EXPLICIT_VHOSTS)) {
 #ifdef LWS_WITH_UNIX_SOCK
 		if (LWS_UNIX_SOCK_ENABLED(vhost))
 			lwsl_info(" Listening on \"%s\"\n", vhost->iface);
@@ -529,7 +533,7 @@ static const struct lws_mimetype {
   { "video/x-msvideo",                                  ".avi"},
 };
 
-LWS_VISIBLE LWS_EXTERN const char *
+const char *
 lws_get_mimetype(const char *file, const struct lws_http_mount *m)
 {
 	const struct lws_protocol_vhost_options *pvo;
@@ -547,7 +551,8 @@ lws_get_mimetype(const char *file, const struct lws_http_mount *m)
 
 		len = strlen(pvo->name);
 		if (n > len && !strcasecmp(&file[n - len], pvo->name)) {
-			lwsl_info("%s: match to user mimetype: %s\n", __func__, pvo->value);
+			lwsl_info("%s: match to user mimetype: %s\n", __func__,
+				  pvo->value);
 			return pvo->value;
 		}
 	}
@@ -558,14 +563,16 @@ lws_get_mimetype(const char *file, const struct lws_http_mount *m)
 
 		len = strlen(mt->extension);
 		if (n > len && !strcasecmp(&file[n - len], mt->extension)) {
-			lwsl_info("%s: match to server mimetype: %s\n", __func__, mt->mimetype);
+			lwsl_info("%s: match to server mimetype: %s\n", __func__,
+				  mt->mimetype);
 			return mt->mimetype;
 		}
 	}
 
 	/* fallback to '*' if defined */
 	if (fallback_mimetype) {
-		lwsl_info("%s: match to any mimetype: %s\n", __func__, fallback_mimetype);
+		lwsl_info("%s: match to any mimetype: %s\n", __func__,
+			  fallback_mimetype);
 		return fallback_mimetype;
 	}
 
@@ -811,7 +818,7 @@ lws_http_serve(struct lws *wsi, char *uri, const char *origin,
 		if (n > (int)strlen(pvo->name) &&
 		    !strcmp(&path[n - strlen(pvo->name)], pvo->name)) {
 			wsi->interpreting = 1;
-			if (!wsi->http2_substream)
+			if (!wsi->mux_substream)
 				wsi->sending_chunked = 1;
 
 			wsi->protocol_interpret_idx = (char)(
@@ -891,7 +898,7 @@ lws_find_mount(struct lws *wsi, const char *uri_ptr, int uri_len)
 			     lws_hdr_total_length(wsi, WSI_TOKEN_GET_URI) ||
 			     lws_hdr_total_length(wsi, WSI_TOKEN_POST_URI) ||
 			     lws_hdr_total_length(wsi, WSI_TOKEN_HEAD_URI) ||
-			     (wsi->http2_substream &&
+			     (wsi->mux_substream &&
 				lws_hdr_total_length(wsi,
 						WSI_TOKEN_HTTP_COLON_PATH)) ||
 			     hm->protocol) &&
@@ -1044,7 +1051,7 @@ lws_http_get_uri_and_method(struct lws *wsi, char **puri_ptr, int *puri_len)
 	}
 
 	if (count != 1 &&
-	    !((wsi->http2_substream || wsi->h2_stream_carries_ws) &&
+	    !((wsi->mux_substream || wsi->h2_stream_carries_ws) &&
 	      lws_hdr_total_length(wsi, WSI_TOKEN_HTTP_COLON_PATH))) {
 		lwsl_warn("multiple methods?\n");
 		return -1;
@@ -1291,7 +1298,8 @@ lws_http_proxy_start(struct lws *wsi, const struct lws_http_mount *hit,
 #if defined(LWS_WITH_HTTP2)
 								|| (
 			lws_hdr_simple_ptr(wsi, WSI_TOKEN_HTTP_COLON_METHOD) &&
-			!strcmp(lws_hdr_simple_ptr(wsi, WSI_TOKEN_HTTP_COLON_METHOD), "post")
+			!strcmp(lws_hdr_simple_ptr(wsi,
+					WSI_TOKEN_HTTP_COLON_METHOD), "post")
 			)
 #endif
 		)
@@ -1348,7 +1356,8 @@ lws_http_proxy_start(struct lws *wsi, const struct lws_http_mount *hit,
 		wsi->proxied_ws_parent = 1;
 		cwsi->h1_ws_proxied = 1;
 		if (i.protocol) {
-			lwsl_debug("%s: (requesting '%s')\n", __func__, i.protocol);
+			lwsl_debug("%s: (requesting '%s')\n",
+					__func__, i.protocol);
 		}
 	}
 
@@ -1425,7 +1434,7 @@ lws_http_action(struct lws *wsi)
 		}
 	}
 
-	if (wsi->http2_substream) {
+	if (wsi->mux_substream) {
 		wsi->http.request_version = HTTP_VERSION_2;
 	} else {
 		/* http_version? Default to 1.0, override with token: */
@@ -1473,7 +1482,7 @@ lws_http_action(struct lws *wsi)
 	 * if there is content supposed to be coming,
 	 * put a timeout on it having arrived
 	 */
-	if (!wsi->h2_stream_immortal)
+	if (!wsi->mux_stream_immortal)
 		lws_set_timeout(wsi, PENDING_TIMEOUT_HTTP_CONTENT,
 				wsi->context->timeout_secs);
 #ifdef LWS_WITH_TLS
@@ -1771,77 +1780,72 @@ deal_body:
 	 * In any case, return 0 and let lws_read decide how to
 	 * proceed based on state
 	 */
-	if (lwsi_state(wsi) != LRS_ISSUING_FILE) {
-		/* Prepare to read body if we have a content length: */
-		lwsl_debug("wsi->http.rx_content_length %lld %d %d\n",
-			   (long long)wsi->http.rx_content_length,
-			   wsi->upgraded_to_http2, wsi->http2_substream);
+	if (lwsi_state(wsi) == LRS_ISSUING_FILE)
+		return 0;
 
-		if (wsi->http.content_length_explicitly_zero &&
-		    lws_hdr_total_length(wsi, WSI_TOKEN_POST_URI)) {
+	/* Prepare to read body if we have a content length: */
+	lwsl_debug("wsi->http.rx_content_length %lld %d %d\n",
+		   (long long)wsi->http.rx_content_length,
+		   wsi->upgraded_to_http2, wsi->mux_substream);
 
-			/*
-			 * POST with an explicit content-length of zero
-			 *
-			 * If we don't give the user code the empty HTTP_BODY
-			 * callback, he may become confused to hear the
-			 * HTTP_BODY_COMPLETION (due to, eg, instantiation of
-			 * lws_spa never happened).
-			 *
-			 * HTTP_BODY_COMPLETION is responsible for sending the
-			 * result status code and result body if any, and
-			 * do the transaction complete processing.
-			 */
-			if (wsi->protocol->callback(wsi,
-					LWS_CALLBACK_HTTP_BODY,
-					wsi->user_space, NULL, 0))
-				return 1;
-			if (wsi->protocol->callback(wsi,
-					LWS_CALLBACK_HTTP_BODY_COMPLETION,
-					wsi->user_space, NULL, 0))
-				return 1;
+	if (wsi->http.content_length_explicitly_zero &&
+	    lws_hdr_total_length(wsi, WSI_TOKEN_POST_URI)) {
 
-			return 0;
-		}
+		/*
+		 * POST with an explicit content-length of zero
+		 *
+		 * If we don't give the user code the empty HTTP_BODY callback,
+		 * he may become confused to hear the HTTP_BODY_COMPLETION (due
+		 * to, eg, instantiation of lws_spa never happened).
+		 *
+		 * HTTP_BODY_COMPLETION is responsible for sending the result
+		 * status code and result body if any, and to do the transaction
+		 * complete processing.
+		 */
+		if (wsi->protocol->callback(wsi, LWS_CALLBACK_HTTP_BODY,
+					    wsi->user_space, NULL, 0))
+			return 1;
+		if (wsi->protocol->callback(wsi, LWS_CALLBACK_HTTP_BODY_COMPLETION,
+					    wsi->user_space, NULL, 0))
+			return 1;
 
-		if (wsi->http.rx_content_length > 0) {
+		return 0;
+	}
 
-			if (lwsi_state(wsi) != LRS_DISCARD_BODY) {
-				lwsi_set_state(wsi, LRS_BODY);
-				lwsl_info("%s: %p: LRS_BODY state set (0x%x)\n",
-				    __func__, wsi, wsi->wsistate);
-			}
-			wsi->http.rx_content_remain =
-					wsi->http.rx_content_length;
+	if (wsi->http.rx_content_length <= 0)
+		return 0;
 
-			/*
-			 * At this point we have transitioned from deferred
-			 * action to expecting BODY on the stream wsi, if it's
-			 * in a bundle like h2.  So if the stream wsi has its
-			 * own buflist, we need to deal with that first.
-			 */
+	if (lwsi_state(wsi) != LRS_DISCARD_BODY) {
+		lwsi_set_state(wsi, LRS_BODY);
+		lwsl_info("%s: %p: LRS_BODY state set (0x%x)\n", __func__, wsi,
+			  wsi->wsistate);
+	}
+	wsi->http.rx_content_remain = wsi->http.rx_content_length;
 
-			while (1) {
-				struct lws_tokens ebuf;
-				int m;
+	/*
+	 * At this point we have transitioned from deferred
+	 * action to expecting BODY on the stream wsi, if it's
+	 * in a bundle like h2.  So if the stream wsi has its
+	 * own buflist, we need to deal with that first.
+	 */
 
-				ebuf.len = (int)lws_buflist_next_segment_len(
-						&wsi->buflist,
-						&ebuf.token);
-				if (!ebuf.len)
-					break;
-				lwsl_debug("%s: consuming %d\n", __func__,
-							(int)ebuf.len);
-				m = lws_read_h1(wsi, ebuf.token,
-						ebuf.len);
-				if (m < 0)
-					return -1;
+	while (1) {
+		struct lws_tokens ebuf;
+		int m;
 
-				if (lws_buflist_aware_finished_consuming(wsi,
-							&ebuf, m, 1, __func__))
-					return -1;
-			}
-		}
+		ebuf.len = (int)lws_buflist_next_segment_len(&wsi->buflist,
+							     &ebuf.token);
+		if (!ebuf.len)
+			break;
+
+		lwsl_debug("%s: consuming %d\n", __func__, (int)ebuf.len);
+		m = lws_read_h1(wsi, ebuf.token, ebuf.len);
+		if (m < 0)
+			return -1;
+
+		if (lws_buflist_aware_finished_consuming(wsi, &ebuf, m, 1,
+							 __func__))
+			return -1;
 	}
 
 	return 0;
@@ -2238,8 +2242,7 @@ upgrade_h2c:
 		wsi->http.ah = ah;
 
 		if (!wsi->h2.h2n) {
-			wsi->h2.h2n = lws_zalloc(sizeof(*wsi->h2.h2n),
-						   "h2n");
+			wsi->h2.h2n = lws_zalloc(sizeof(*wsi->h2.h2n), "h2n");
 			if (!wsi->h2.h2n)
 				return 1;
 		}
@@ -2248,7 +2251,7 @@ upgrade_h2c:
 
 		/* HTTP2 union */
 
-		lws_h2_settings(wsi, &wsi->h2.h2n->set, (unsigned char *)tbuf, n);
+		lws_h2_settings(wsi, &wsi->h2.h2n->set, (uint8_t *)tbuf, n);
 
 		lws_hpack_dynamic_size(wsi, wsi->h2.h2n->set.s[
 		                                      H2SET_HEADER_TABLE_SIZE]);
@@ -2381,7 +2384,7 @@ lws_http_transaction_completed(struct lws *wsi)
 #endif
 
 	/* if we can't go back to accept new headers, drop the connection */
-	if (wsi->http2_substream)
+	if (wsi->mux_substream)
 		return 1;
 
 	if (wsi->seen_zero_length_recv)
@@ -2480,14 +2483,14 @@ lws_http_transaction_completed(struct lws *wsi)
 				lwsl_debug("acquired ah\n");
 
 	lwsl_debug("%s: %p: keep-alive await new transaction (state 0x%x)\n",
-			__func__, wsi, wsi->wsistate);
+		   __func__, wsi, wsi->wsistate);
 	lws_callback_on_writable(wsi);
 
 	return 0;
 }
 
 #if defined(LWS_WITH_FILE_OPS)
-LWS_VISIBLE int
+int
 lws_serve_http_file(struct lws *wsi, const char *file, const char *content_type,
 		    const char *other_headers, int other_headers_len)
 {
@@ -2531,7 +2534,7 @@ lws_serve_http_file(struct lws *wsi, const char *file, const char *content_type,
 			if (lws_return_http_status(wsi, HTTP_STATUS_NOT_FOUND,
 						   NULL))
 						return -1;
-			return !wsi->http2_substream;
+			return !wsi->mux_substream;
 		}
 	}
 
@@ -2675,7 +2678,7 @@ lws_serve_http_file(struct lws *wsi, const char *file, const char *content_type,
 		goto bail;
 #endif
 
-	if (!wsi->http2_substream) {
+	if (!wsi->mux_substream) {
 		/* for http/1.1 ... */
 		if (!wsi->sending_chunked
 #if defined(LWS_WITH_HTTP_STREAM_COMPRESSION)
@@ -2802,7 +2805,7 @@ bail:
 
 #if defined(LWS_WITH_FILE_OPS)
 
-LWS_VISIBLE int lws_serve_http_file_fragment(struct lws *wsi)
+int lws_serve_http_file_fragment(struct lws *wsi)
 {
 	struct lws_context *context = wsi->context;
 	struct lws_context_per_thread *pt = &context->pt[(int)wsi->tsi];
@@ -2814,7 +2817,7 @@ LWS_VISIBLE int lws_serve_http_file_fragment(struct lws *wsi)
 #endif
 	int n, m;
 
-	lwsl_debug("wsi->http2_substream %d\n", wsi->http2_substream);
+	lwsl_debug("wsi->mux_substream %d\n", wsi->mux_substream);
 
 	do {
 
@@ -2853,10 +2856,7 @@ LWS_VISIBLE int lws_serve_http_file_fragment(struct lws *wsi)
 			goto all_sent;
 
 		n = 0;
-
-		pstart = pt->serv_buf + LWS_H2_FRAME_HEADER_LENGTH;
-
-		p = pstart;
+		p = pstart = pt->serv_buf + LWS_H2_FRAME_HEADER_LENGTH;
 
 #if defined(LWS_WITH_RANGES)
 		if (wsi->http.range.count_ranges && !wsi->http.range.inside) {
@@ -2901,7 +2901,7 @@ LWS_VISIBLE int lws_serve_http_file_fragment(struct lws *wsi)
 				poss = wsi->http.tx_content_remain;
 
 		/*
-		 * if there is a hint about how much we will do well to send at
+		 * If there is a hint about how much we will do well to send at
 		 * one time, restrict ourselves to only trying to send that.
 		 */
 		if (wsi->protocol->tx_packet_size &&
@@ -2912,16 +2912,21 @@ LWS_VISIBLE int lws_serve_http_file_fragment(struct lws *wsi)
 			lws_filepos_t txc = wsi->role_ops->tx_credit(wsi);
 
 			if (!txc) {
-				lwsl_info("%s: came here with no tx credit\n",
-						__func__);
+				/*
+				 * We shouldn't've been able to get the
+				 * WRITEABLE if we are skint
+				 */
+				lwsl_notice("%s: %p: no tx credit\n", __func__,
+						wsi);
+
 				return 0;
 			}
 			if (txc < poss)
 				poss = txc;
 
 			/*
-			 * consumption of the actual payload amount sent will be
-			 * handled when the role data frame is sent
+			 * Tracking consumption of the actual payload amount
+			 * will be handled when the role data frame is sent...
 			 */
 		}
 
@@ -3052,7 +3057,7 @@ all_sent:
 					 * state, not the root connection at the
 					 * network level
 					 */
-					if (wsi->http2_substream)
+					if (wsi->mux_substream)
 						return 1;
 					else
 						return -1;
@@ -3080,7 +3085,7 @@ file_had_it:
 #endif
 
 #if defined(LWS_WITH_SERVER)
-LWS_VISIBLE void
+void
 lws_server_get_canonical_hostname(struct lws_context *context,
 				  const struct lws_context_creation_info *info)
 {

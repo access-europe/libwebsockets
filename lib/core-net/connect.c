@@ -24,7 +24,7 @@
 
 #include "private-lib-core.h"
 
-LWS_VISIBLE struct lws *
+struct lws *
 lws_client_connect_via_info(const struct lws_client_connect_info *i)
 {
 	const char *local = i->protocol;
@@ -144,6 +144,10 @@ lws_client_connect_via_info(const struct lws_client_connect_info *i)
 	wsi->position_in_fds_table = LWS_NO_FDS_POS;
 	wsi->ocport = wsi->c_port = i->port;
 	wsi->sys_tls_client_cert = i->sys_tls_client_cert;
+
+#if defined(LWS_ROLE_H2)
+	wsi->h2.manual_initial_tx_credit = (int32_t)i->manual_initial_tx_credit;
+#endif
 
 	wsi->protocol = &wsi->vhost->protocols[0];
 	wsi->client_pipeline = !!(i->ssl_connection & LCCSCF_PIPELINE);

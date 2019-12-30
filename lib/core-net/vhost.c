@@ -204,7 +204,7 @@ lws_role_call_client_bind(struct lws *wsi,
 }
 #endif
 
-LWS_VISIBLE void *
+void *
 lws_protocol_vh_priv_zalloc(struct lws_vhost *vhost,
 			    const struct lws_protocols *prot, int size)
 {
@@ -236,7 +236,7 @@ lws_protocol_vh_priv_zalloc(struct lws_vhost *vhost,
 	return vhost->protocol_vh_privs[n];
 }
 
-LWS_VISIBLE void *
+void *
 lws_protocol_vh_priv_get(struct lws_vhost *vhost,
 			 const struct lws_protocols *prot)
 {
@@ -369,7 +369,7 @@ lws_protocol_init_vhost(struct lws_vhost *vh, int *any)
  * inform every vhost that hasn't already done it, that
  * his protocols are initializing
  */
-LWS_VISIBLE int
+int
 lws_protocol_init(struct lws_context *context)
 {
 	struct lws_vhost *vh = context->vhost_list;
@@ -436,7 +436,7 @@ static const struct lws_protocols protocols_dummy[] = {
 #undef LWS_HAVE_GETENV
 #endif
 
-LWS_VISIBLE struct lws_vhost *
+struct lws_vhost *
 lws_create_vhost(struct lws_context *context,
 		 const struct lws_context_creation_info *info)
 {
@@ -831,7 +831,7 @@ bail:
 	return NULL;
 }
 
-LWS_VISIBLE int
+int
 lws_init_vhost_client_ssl(const struct lws_context_creation_info *info,
 			  struct lws_vhost *vhost)
 {
@@ -843,13 +843,13 @@ lws_init_vhost_client_ssl(const struct lws_context_creation_info *info,
 	return lws_context_init_client_ssl(&i, vhost);
 }
 
-LWS_VISIBLE void
+void
 lws_cancel_service_pt(struct lws *wsi)
 {
 	lws_plat_pipe_signal(wsi);
 }
 
-LWS_VISIBLE void
+void
 lws_cancel_service(struct lws_context *context)
 {
 	struct lws_context_per_thread *pt = &context->pt[0];
@@ -958,7 +958,6 @@ lws_vhost_destroy1(struct lws_vhost *vh)
 
 	lws_vhost_lock(vh); /* -------------- vh { */
 
-	vh->being_destroyed = 1;
 #if defined(LWS_WITH_NETWORK)
 	/*
 	 * PHASE 1: take down or reassign any listen wsi
@@ -1039,6 +1038,8 @@ __lws_vhost_destroy2(struct lws_vhost *vh)
 	struct lws_deferred_free *df;
 	struct lws wsi;
 	int n;
+
+	vh->being_destroyed = 0;
 
 #if defined(LWS_WITH_CLIENT)
 	/*
@@ -1268,7 +1269,7 @@ lws_check_deferred_free(struct lws_context *context, int tsi, int force)
 }
 
 
-LWS_VISIBLE void
+void
 lws_vhost_destroy(struct lws_vhost *vh)
 {
 	struct lws_deferred_free *df = lws_malloc(sizeof(*df), "deferred free");
@@ -1307,20 +1308,20 @@ out:
 }
 
 
-LWS_EXTERN void *
+void *
 lws_vhost_user(struct lws_vhost *vhost)
 {
 	return vhost->user;
 }
 
-LWS_VISIBLE LWS_EXTERN int
+int
 lws_get_vhost_listen_port(struct lws_vhost *vhost)
 {
 	return vhost->listen_port;
 }
 
 #if defined(LWS_WITH_SERVER)
-LWS_VISIBLE LWS_EXTERN void
+void
 lws_context_deprecate(struct lws_context *context, lws_reload_func cb)
 {
 	struct lws_vhost *vh = context->vhost_list, *vh1;
@@ -1389,12 +1390,8 @@ lws_get_vhost_by_name(struct lws_context *context, const char *name)
  */
 
 int
-lws_vhost_active_conns(struct lws *wsi, struct lws **nwsi)
+lws_vhost_active_conns(struct lws *wsi, struct lws **nwsi, const char *adsin)
 {
-	const char *adsin;
-
-	adsin = lws_hdr_simple_ptr(wsi, _WSI_TOKEN_CLIENT_PEER_ADDRESS);
-
 	lws_vhost_lock(wsi->vhost); /* ----------------------------------- { */
 
 	lws_start_foreach_dll_safe(struct lws_dll2 *, d, d1,
@@ -1405,7 +1402,14 @@ lws_vhost_active_conns(struct lws *wsi, struct lws **nwsi)
 		lwsl_debug("%s: check %s %s %d %d\n", __func__, adsin,
 			   w->cli_hostname_copy, wsi->c_port, w->c_port);
 
-		if (w != wsi && w->cli_hostname_copy &&
+		if (w != wsi &&
+		    /*
+		     * "same internet protocol"... this is a bit tricky,
+		     * since h2 start out as h1
+		     */
+		    (w->role_ops == wsi->role_ops ||
+		     (lwsi_role_http(w) && lwsi_role_http(wsi))) &&
+		    w->cli_hostname_copy &&
 		    !strcmp(adsin, w->cli_hostname_copy) &&
 #if defined(LWS_WITH_TLS)
 		    (wsi->tls.use_ssl & LCCSCF_USE_SSL) ==
