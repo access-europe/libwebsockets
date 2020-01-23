@@ -304,6 +304,7 @@ enum lws_token_indexes {
 	WSI_TOKEN_REPLAY_NONCE					= 84,
 	WSI_TOKEN_COLON_PROTOCOL				= 85,
 	WSI_TOKEN_X_AUTH_TOKEN					= 86,
+	WSI_TOKEN_HTTP_CORS					= 87,
 
 	/****** add new things just above ---^ ******/
 

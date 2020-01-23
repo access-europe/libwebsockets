@@ -1755,6 +1755,8 @@ lws_http_action(struct lws *wsi)
 	wsi->cache_revalidate = hit->cache_revalidate;
 	wsi->cache_intermediaries = hit->cache_intermediaries;
 
+	wsi->cors = hit->cors;
+
 	m = 1;
 #if defined(LWS_WITH_FILE_OPS)
 	if (hit->origin_protocol == LWSMPRO_FILE)
@@ -2553,6 +2555,7 @@ lws_serve_http_file(struct lws *wsi, const char *file, const char *content_type,
 #endif
 	int ret = 0, cclen = 8, n = HTTP_STATUS_OK;
 	char cache_control[50], *cc = "no-store";
+	char *cors = "*";
 	lws_fop_flags_t fflags = LWS_O_RDONLY;
 	const struct lws_plat_file_ops *fops;
 	lws_filepos_t total_content_length;
@@ -2800,6 +2803,17 @@ lws_serve_http_file(struct lws *wsi, const char *file, const char *content_type,
 				WSI_TOKEN_HTTP_CACHE_CONTROL,
 				(unsigned char *)cc, cclen, &p, end))
 			goto bail;
+	}
+
+	if (wsi->cors) {
+		if (!other_headers ||
+				(!strstr(other_headers, "access-control-allow-origin") &&
+				!strstr(other_headers, "Access-Control-Allow-Origin"))) {
+			if (lws_add_http_header_by_token(wsi,
+					WSI_TOKEN_HTTP_CORS,
+					(unsigned char *)cors, strlen(cors), &p, end))
+				return -1;
+		}
 	}
 
 	if (other_headers) {

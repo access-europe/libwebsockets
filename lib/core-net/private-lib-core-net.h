@@ -781,6 +781,7 @@ struct lws {
 	unsigned int			do_bind:1;
 	unsigned int			oom4:1;
 	unsigned int			validity_hup:1;
+	unsigned int			cors:1;
 
 	unsigned int			could_have_pending:1; /* detect back-to-back writes */
 	unsigned int			outer_will_close:1;

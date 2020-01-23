@@ -99,6 +99,8 @@ static const char * const set[] = {
 
 	"x-auth-token:",
 
+	"access-control-allow-origin:",
+
 	"", /* not matchable */
 
 };
